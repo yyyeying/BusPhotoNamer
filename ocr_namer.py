@@ -237,10 +237,19 @@ def ocr_namer(file_path: str, file_name: str, skip_named: bool = False):
         number = "unknown"
         flag = True
     if len(id_list) > 0:
-        weighted = defaultdict(float)
-        for text, score in id_list:
-            weighted[text] += score
-        id_ = max(weighted, key=weighted.get).replace("皖", "京")
+        # 优先选择京A开头的车牌号（北京公交集团车牌）
+        jing_a_list = [(t, s) for t, s in id_list if t.startswith("京A")]
+        if jing_a_list:
+            weighted = defaultdict(float)
+            for text, score in jing_a_list:
+                weighted[text] += score
+            id_ = max(weighted, key=weighted.get).replace("皖", "京")
+            log("INFO", "优先选择京A车牌: {}".format(id_), file_name, sp, tp)
+        else:
+            weighted = defaultdict(float)
+            for text, score in id_list:
+                weighted[text] += score
+            id_ = max(weighted, key=weighted.get).replace("皖", "京")
     else:
         id_ = "unknown"
         flag = True
