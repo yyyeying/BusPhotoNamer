@@ -82,7 +82,7 @@ def parse_filename(file_name: str) -> tuple:
     return line, number, id_
 
 
-def ocr_namer(file_path: str, file_name: str):
+def ocr_namer(file_path: str, file_name: str, skip_named: bool = False):
     """对单张公交车照片执行 OCR 识别并重命名。
 
     采用三阶段递进策略，在检测结果充足时提前退出，避免无谓的 OCR 调用：
@@ -100,6 +100,9 @@ def ocr_namer(file_path: str, file_name: str):
         prefix = line_prefix_match.group(1)
         if re.fullmatch(bpt_line_regex, prefix) or re.fullmatch(non_bpt_line_regex, prefix):
             if "unknown" not in file_name and len(prefix) > 1:
+                if skip_named:
+                    log("INFO", "跳过已命名文件", file_name)
+                    return
                 verify_mode = True
             else:
                 log("INFO", "重新识别（unknown 或线路号为 1 位数）", file_name)

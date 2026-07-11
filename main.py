@@ -28,6 +28,8 @@ def main():
     parser = argparse.ArgumentParser(description="公交车照片 OCR 自动重命名工具")
     parser.add_argument("image_path", nargs="?", default=None,
                         help="照片目录路径（支持递归子目录），不指定则使用 config_local.py 中的默认路径")
+    parser.add_argument("--skip-named", action="store_true",
+                        help="跳过已命名文件，不重新验证（默认会重新 OCR 验证）")
     args = parser.parse_args()
 
     # 未指定路径时使用 config_local.py 中的默认路径
@@ -50,7 +52,7 @@ def main():
     total_process_handler.steps = len(images) * MAX_STEPS
     for dir_path, file_name in images:
         try:
-            ocr_namer(dir_path, file_name)
+            ocr_namer(dir_path, file_name, skip_named=args.skip_named)
         except Exception as e:
             log("ERROR", "处理出错，跳过: {}".format(e), file_name)
 
