@@ -1,0 +1,64 @@
+---
+description: BusPhotoNamer 项目的 Python 编码规范，包括命名、注释、类型提示和格式约定
+alwaysApply: true
+---
+
+# Python 编码规范
+
+## 注释与文档
+
+- 所有注释和 docstring 使用**中文**
+- 模块级、类级、函数级 docstring 用中文描述用途
+- 行内注释说明"为什么"而非"做了什么"
+
+```python
+# GOOD
+def ocr_namer(file_path: str, file_name: str):
+    """对单张公交车照片执行 OCR 识别并重命名。"""
+
+# BAD - 无注释或英文注释
+def ocr_namer(file_path, file_name):
+    # rename the bus photo
+```
+
+## 类型提示
+
+- 函数参数和返回值应使用类型提示
+- PIL Image 类型用 `Image`（from PIL import Image）
+
+```python
+# GOOD
+def binary_image(image: Image, threshold: int = 128):
+
+# BAD
+def binary_image(image, threshold=128):
+```
+
+## 命名约定
+
+- 函数和变量：`snake_case`（如 `line_list`, `get_name_number`）
+- 类名：`PascalCase`（如 `GetNameNumber`, `ProcessHandler`）
+- 常量/正则：`snake_case`（如 `bpt_line_regex`, `print_lock`）
+- 私有变量以下划线前缀（如 `_instance`）
+
+## 打印日志格式
+
+- 统一使用 `.format()` 格式化，包含进度信息
+- 格式模板：`"[{文件名} {单图进度:.2f}% {总进度:.2f}%]消息"`
+
+```python
+# GOOD
+print("[{} {:.2f}% {:.2f}%]processing {}".format(
+    file_name, single_process_handler.process,
+    total_process_handler.process, file_name))
+```
+
+## 线程安全
+
+- 共享资源（OCR 实例、文件 IO、打印输出）必须用 `threading.Lock()` 保护
+- 命名约定：`{资源}_lock`（如 `boat_lock`, `io_lock`, `print_lock`）
+- 锁的 acquire/release 应成对出现，推荐使用 `with` 语句或显式 try/finally
+
+## 单例模式
+
+- 重量级资源（如 PaddleOCR 模型）使用 `@singleton` 装饰器确保只初始化一次
