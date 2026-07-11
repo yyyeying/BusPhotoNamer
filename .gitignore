@@ -1,3 +1,6 @@
+# 本地配置（含默认路径等敏感信息）
+config_local.py
+
 # Python
 __pycache__/
 *.py[cod]

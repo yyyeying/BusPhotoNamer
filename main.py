@@ -26,10 +26,21 @@ def collect_images(root_path: str) -> list:
 def main():
     """主入口：递归遍历指定目录及其子目录下的公交车照片，逐张执行 OCR 识别并重命名。"""
     parser = argparse.ArgumentParser(description="公交车照片 OCR 自动重命名工具")
-    parser.add_argument("image_path", help="照片目录路径（支持递归子目录）")
+    parser.add_argument("image_path", nargs="?", default=None,
+                        help="照片目录路径（支持递归子目录），不指定则使用 config_local.py 中的默认路径")
     args = parser.parse_args()
 
-    image_path = args.image_path
+    # 未指定路径时使用 config_local.py 中的默认路径
+    if args.image_path is not None:
+        image_path = args.image_path
+    else:
+        try:
+            from config_local import DEFAULT_IMAGE_PATH
+            image_path = DEFAULT_IMAGE_PATH
+        except ImportError:
+            print("未指定目录路径，且 config_local.py 不存在。")
+            print("请通过命令行参数指定路径，或创建 config_local.py 设置 DEFAULT_IMAGE_PATH。")
+            sys.exit(1)
     if not os.path.isdir(image_path):
         print("目录不存在：{}".format(image_path))
         sys.exit(1)
