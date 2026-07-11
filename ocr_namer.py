@@ -8,7 +8,7 @@ from PIL import Image, ImageFilter
 
 from get_name_number import GetNameNumber
 from process import ProcessHandler, log, total_process_handler
-from regex import bpt_line_regex, non_bpt_line_regex
+from regex import bpt_line_regex, id_regex, non_bpt_line_regex
 
 # 最大 OCR 轮次：Phase1(3) + Phase2(9) + Phase3(9) = 21
 MAX_STEPS = 21
@@ -55,6 +55,33 @@ def run_ocr_batch(file_name: str, images: list, process_handler: ProcessHandler)
     return line_list, number_list, id_list
 
 
+def parse_filename(file_name: str) -> tuple:
+    """从已命名的文件名中提取线路号、自编号、车牌号。
+
+    返回 (line, number, id_)，未找到的字段为 None。
+    """
+    stem = file_name.rsplit('.', 1)[0]
+    line_match = re.match(r'^(.+?)路(.+)', stem)
+    if not line_match:
+        return None, None, None
+    line = line_match.group(1)
+    rest = line_match.group(2)
+    # 提取车牌号
+    id_match = re.search(id_regex, rest)
+    id_ = id_match.group(0) if id_match else None
+    # 提取自编号（路牌和车牌之间的部分，按 _ 分割取第一段）
+    number = None
+    if id_match:
+        before_id = rest[:id_match.start()].strip('_')
+        if before_id:
+            number = before_id.split('_')[0]
+    else:
+        parts = rest.split('_')
+        if parts and parts[0]:
+            number = parts[0]
+    return line, number, id_
+
+
 def ocr_namer(file_path: str, file_name: str):
     """对单张公交车照片执行 OCR 识别并重命名。
 
@@ -63,21 +90,28 @@ def ocr_namer(file_path: str, file_name: str):
     Phase 2: 9 张 RGB 通道拆分（仅在 Phase 1 不足时）
     Phase 3: 9 张 Otsu 自适应二值化（仅在 Phase 2 不足时）
     每阶段内的图像变体通过多线程并行处理。
+
+    对已命名文件：重新 OCR 验证，如果结果与文件名不一致则用新结果替换。
     """
-    # 跳过已识别格式的图片（文件名以"{线路号}路"开头且无 unknown 字段）
-    # 线路号为 1 位数的也重新识别（误识别概率高）
+    # 判断是否为已命名文件（需要验证模式）
+    verify_mode = False
     line_prefix_match = re.match(r'^(.+?)路', file_name)
     if line_prefix_match:
         prefix = line_prefix_match.group(1)
         if re.fullmatch(bpt_line_regex, prefix) or re.fullmatch(non_bpt_line_regex, prefix):
             if "unknown" not in file_name and len(prefix) > 1:
-                log("INFO", "跳过已识别格式", file_name)
-                return
-            log("INFO", "重新识别（unknown 或线路号为 1 位数）", file_name)
+                verify_mode = True
+            else:
+                log("INFO", "重新识别（unknown 或线路号为 1 位数）", file_name)
     single_process_handler = ProcessHandler(MAX_STEPS)
     sp = single_process_handler.process
     tp = total_process_handler.process
-    log("INFO", "开始处理 | 目录: {}".format(file_path), file_name, sp, tp)
+    if verify_mode:
+        old_line, old_number, old_id = parse_filename(file_name)
+        log("INFO", "验证模式 | 旧: 线路={}, 自编={}, 车牌={}".format(old_line, old_number, old_id),
+            file_name, sp, tp)
+    else:
+        log("INFO", "开始处理 | 目录: {}".format(file_path), file_name, sp, tp)
     line_list = []
     number_list = []
     id_list = []
@@ -212,6 +246,31 @@ def ocr_namer(file_path: str, file_name: str):
         log("INFO", "非运通线路不允许 4 位自编号，丢弃: {}".format(number), file_name, sp, tp)
         number = "unknown"
         flag = True
+    # 验证模式：对比新旧结果，不一致时用新结果替换（unknown 保留旧值）
+    if verify_mode:
+        changed = False
+        if line != "unknown" and line != old_line:
+            log("INFO", "线路号变化: {} -> {}".format(old_line, line), file_name, sp, tp)
+            changed = True
+        elif line == "unknown":
+            line = old_line
+        if number != "unknown" and number != old_number:
+            log("INFO", "自编号变化: {} -> {}".format(old_number, number), file_name, sp, tp)
+            changed = True
+        elif number == "unknown" and old_number:
+            number = old_number
+        if id_ != "unknown" and id_ != old_id:
+            log("INFO", "车牌号变化: {} -> {}".format(old_id, id_), file_name, sp, tp)
+            changed = True
+        elif id_ == "unknown" and old_id:
+            id_ = old_id
+        if not changed:
+            log("INFO", "验证通过，结果一致", file_name, sp, tp)
+            return
+        log("INFO", "验证未通过，使用新结果重命名", file_name, sp, tp)
+        flag = False
+        if number == "unknown" or id_ == "unknown":
+            flag = True
     # 所有字段均为 unknown 时跳过重命名
     if line == "unknown" and number == "unknown" and id_ == "unknown":
         log("WARN", "所有字段均为 unknown，跳过重命名", file_name, sp, tp)
