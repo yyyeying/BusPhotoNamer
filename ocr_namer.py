@@ -216,21 +216,25 @@ def ocr_namer(file_path: str, file_name: str):
         print("[{} {:.2f}% {:.2f}%]所有字段均为 unknown，跳过重命名".format(
             file_name, single_process_handler.process, total_process_handler.process))
         return
+    # 提取原始文件名（如果已重命名过，取最后一个 _ 后面的部分）
+    original_name = file_name.split(".")[0]
+    if re.match(r'^.+?路', file_name) and "_" in original_name:
+        original_name = original_name.rsplit("_", 1)[-1]
     if re.match(non_bpt_line_regex, line) is not None:
         # 非公交集团线路用车牌号
         if flag is True:
-            new_file_name = "{}路{}_{}.jpg".format(line, id_, file_name.split(".")[0])
+            new_file_name = "{}路{}_{}.jpg".format(line, id_, original_name)
         else:
             new_file_name = "{}路{}.jpg".format(line, id_)
     else:
         if flag is True:
-            new_file_name = "{}路{}_{}_{}.jpg".format(line, number, id_, file_name.split(".")[0])
+            new_file_name = "{}路{}_{}_{}.jpg".format(line, number, id_, original_name)
         else:
             new_file_name = "{}路{}_{}.jpg".format(line, number, id_)
     try:
         os.rename(os.path.join(file_path, file_name), os.path.join(file_path, new_file_name))
     except FileExistsError:
-        new_file_name = "{}路{}_{}_{}.jpg".format(line, number, id_, file_name.split(".")[0])
+        new_file_name = "{}路{}_{}_{}.jpg".format(line, number, id_, original_name)
         os.rename(os.path.join(file_path, file_name), os.path.join(file_path, new_file_name))
     print("[{} {:.2f}% {:.2f}%]{} -> {}".format(file_name,
                                                 single_process_handler.process,

@@ -56,9 +56,9 @@ def get_name_number(file_path: str, image: Image, process_handler: ProcessHandle
     number_list = []
     line_list = []
     id_list = []
-    # 直接将 PIL 图像转为 numpy 数组传给 PaddleOCR，省去磁盘 IO
-    if image.mode == "1":
-        image = image.convert("L")
+    # PaddleOCR 3.x 要求 RGB 图像，灰度/二值图需转换
+    if image.mode != "RGB":
+        image = image.convert("RGB")
     img_array = np.array(image)
     with print_lock:
         print("[{} {:.2f}% {:.2f}%]Begin OCR: {}".format(file_path,
