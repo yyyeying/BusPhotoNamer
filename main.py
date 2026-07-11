@@ -4,7 +4,7 @@ import os
 import sys
 
 from ocr_namer import MAX_STEPS, ocr_namer
-from process import total_process_handler
+from process import log, total_process_handler
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 logging.disable(logging.DEBUG)
@@ -38,21 +38,21 @@ def main():
             from config_local import DEFAULT_IMAGE_PATH
             image_path = DEFAULT_IMAGE_PATH
         except ImportError:
-            print("未指定目录路径，且 config_local.py 不存在。")
-            print("请通过命令行参数指定路径，或创建 config_local.py 设置 DEFAULT_IMAGE_PATH。")
+            log("ERROR", "未指定目录路径，且 config_local.py 不存在")
+            log("INFO", "请通过命令行参数指定路径，或创建 config_local.py 设置 DEFAULT_IMAGE_PATH")
             sys.exit(1)
     if not os.path.isdir(image_path):
-        print("目录不存在：{}".format(image_path))
+        log("ERROR", "目录不存在: {}".format(image_path))
         sys.exit(1)
 
     images = collect_images(image_path)
-    print("共找到 {} 张图片".format(len(images)))
+    log("INFO", "共找到 {} 张图片 | 目录: {}".format(len(images), image_path))
     total_process_handler.steps = len(images) * MAX_STEPS
     for dir_path, file_name in images:
         try:
             ocr_namer(dir_path, file_name)
         except Exception as e:
-            print("处理 {} 时出错，跳过：{}".format(file_name, e))
+            log("ERROR", "处理出错，跳过: {}".format(e), file_name)
 
 
 if __name__ == "__main__":

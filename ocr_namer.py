@@ -7,7 +7,7 @@ import numpy as np
 from PIL import Image, ImageFilter
 
 from get_name_number import GetNameNumber
-from process import ProcessHandler, total_process_handler
+from process import ProcessHandler, log, total_process_handler
 from regex import bpt_line_regex, non_bpt_line_regex
 
 # 最大 OCR 轮次：Phase1(3) + Phase2(9) + Phase3(9) = 21
@@ -65,28 +65,26 @@ def ocr_namer(file_path: str, file_name: str):
     每阶段内的图像变体通过多线程并行处理。
     """
     # 跳过已识别格式的图片（文件名以"{线路号}路"开头且无 unknown 字段）
+    # 线路号为 1 位数的也重新识别（误识别概率高）
     line_prefix_match = re.match(r'^(.+?)路', file_name)
     if line_prefix_match:
         prefix = line_prefix_match.group(1)
         if re.fullmatch(bpt_line_regex, prefix) or re.fullmatch(non_bpt_line_regex, prefix):
-            if "unknown" not in file_name:
-                print("[{}]跳过已识别格式的图片".format(file_name))
+            if "unknown" not in file_name and len(prefix) > 1:
+                log("INFO", "跳过已识别格式", file_name)
                 return
-            print("[{}]检测到 unknown 字段，重新识别".format(file_name))
+            log("INFO", "重新识别（unknown 或线路号为 1 位数）", file_name)
     single_process_handler = ProcessHandler(MAX_STEPS)
-    print("[{} {:.2f}% {:.2f}%]processing {}".format(file_name,
-                                                     single_process_handler.process,
-                                                     total_process_handler.process,
-                                                     file_name))
+    sp = single_process_handler.process
+    tp = total_process_handler.process
+    log("INFO", "开始处理 | 目录: {}".format(file_path), file_name, sp, tp)
     line_list = []
     number_list = []
     id_list = []
     try:
         image = Image.open(os.path.join(file_path, file_name)).convert("RGB")
     except Exception as e:
-        print("[{} {:.2f}% {:.2f}%]图片加载失败，跳过：{}".format(file_name,
-                                                             single_process_handler.process,
-                                                             total_process_handler.process, e))
+        log("ERROR", "图片加载失败，跳过: {}".format(e), file_name, sp, tp)
         return
     base_images = [
         image,
@@ -99,9 +97,10 @@ def ocr_namer(file_path: str, file_name: str):
     line_list += l
     number_list += n
     id_list += i
-    print("[{} {:.2f}% {:.2f}%]Phase 1 完成：线路号 {} 个，自编号 {} 个，车牌号 {} 个".format(
-        file_name, single_process_handler.process, total_process_handler.process,
-        len(line_list), len(number_list), len(id_list)))
+    sp = single_process_handler.process
+    tp = total_process_handler.process
+    log("INFO", "Phase 1 完成 | 线路号 {} 个, 自编号 {} 个, 车牌号 {} 个".format(
+        len(line_list), len(number_list), len(id_list)), file_name, sp, tp)
 
     # Phase 2：RGB 通道拆分（仅在 Phase 1 结果不足时执行）
     if not has_enough_results(line_list, number_list, id_list):
@@ -113,9 +112,10 @@ def ocr_namer(file_path: str, file_name: str):
         line_list += l
         number_list += n
         id_list += i
-        print("[{} {:.2f}% {:.2f}%]Phase 2 完成：线路号 {} 个，自编号 {} 个，车牌号 {} 个".format(
-            file_name, single_process_handler.process, total_process_handler.process,
-            len(line_list), len(number_list), len(id_list)))
+        sp = single_process_handler.process
+        tp = total_process_handler.process
+        log("INFO", "Phase 2 完成 | 线路号 {} 个, 自编号 {} 个, 车牌号 {} 个".format(
+            len(line_list), len(number_list), len(id_list)), file_name, sp, tp)
 
     # Phase 3：Otsu 自适应二值化（仅在 Phase 2 结果不足时执行）
     if not has_enough_results(line_list, number_list, id_list):
@@ -129,15 +129,16 @@ def ocr_namer(file_path: str, file_name: str):
         line_list += l
         number_list += n
         id_list += i
-        print("[{} {:.2f}% {:.2f}%]Phase 3 完成：线路号 {} 个，自编号 {} 个，车牌号 {} 个".format(
-            file_name, single_process_handler.process, total_process_handler.process,
-            len(line_list), len(number_list), len(id_list)))
+        sp = single_process_handler.process
+        tp = total_process_handler.process
+        log("INFO", "Phase 3 完成 | 线路号 {} 个, 自编号 {} 个, 车牌号 {} 个".format(
+            len(line_list), len(number_list), len(id_list)), file_name, sp, tp)
 
-    print("[{} {:.2f}% {:.2f}%]疑似线路号：{}\n疑似自编号：{}\n疑似车牌号：{}".format(
-        file_name,
-        single_process_handler.process,
-        total_process_handler.process,
-        [x[0] for x in line_list], [x[0] for x in number_list], [x[0] for x in id_list]))
+    sp = single_process_handler.process
+    tp = total_process_handler.process
+    log("INFO", "疑似: 线路号={}, 自编号={}, 车牌号={}".format(
+        [x[0] for x in line_list], [x[0] for x in number_list], [x[0] for x in id_list]),
+        file_name, sp, tp)
     # 确定性去重：当线路号是其他更长候选值的子串且出现次数不超过容器时，删除
     line_counts = Counter(l[0] for l in line_list)
     number_counts = Counter(n[0] for n in number_list)
@@ -171,20 +172,15 @@ def ocr_namer(file_path: str, file_name: str):
                         container_count = line2_count
                     break
         if delete_flag is True:
-            print("[{} {:.2f}% {:.2f}%]清理：疑似线路号 {} 包含在 {} 中（出现 {} 次 ≤ {} 次）".format(
-                file_name,
-                single_process_handler.process,
-                total_process_handler.process, line_text, container_text,
-                line_counts[line_text], container_count))
+            log("INFO", "清理: 线路号 {} 包含在 {} 中 ({} 次 ≤ {} 次)".format(
+                line_text, container_text, line_counts[line_text], container_count),
+                file_name, sp, tp)
         else:
             new_line_list.append((line_text, line_score))
     line_list = new_line_list
-    print("[{} {:.2f}% {:.2f}%]清理后：\n疑似线路号：{}\n疑似自编号：{}\n疑似车牌号：{}".format(
-        file_name,
-        single_process_handler.process,
-        total_process_handler.process,
-        [x[0] for x in line_list], [x[0] for x in number_list],
-        [x[0] for x in id_list]))
+    log("INFO", "清理后: 线路号={}, 自编号={}, 车牌号={}".format(
+        [x[0] for x in line_list], [x[0] for x in number_list], [x[0] for x in id_list]),
+        file_name, sp, tp)
     # 置信度加权投票：累计每个候选值的置信度，取最高者
     flag = False
     if len(line_list) > 0:
@@ -213,8 +209,7 @@ def ocr_namer(file_path: str, file_name: str):
         flag = True
     # 所有字段均为 unknown 时跳过重命名
     if line == "unknown" and number == "unknown" and id_ == "unknown":
-        print("[{} {:.2f}% {:.2f}%]所有字段均为 unknown，跳过重命名".format(
-            file_name, single_process_handler.process, total_process_handler.process))
+        log("WARN", "所有字段均为 unknown，跳过重命名", file_name, sp, tp)
         return
     # 提取原始文件名（如果已重命名过，取最后一个 _ 后面的部分）
     original_name = file_name.split(".")[0]
@@ -236,11 +231,7 @@ def ocr_namer(file_path: str, file_name: str):
     except FileExistsError:
         new_file_name = "{}路{}_{}_{}.jpg".format(line, number, id_, original_name)
         os.rename(os.path.join(file_path, file_name), os.path.join(file_path, new_file_name))
-    print("[{} {:.2f}% {:.2f}%]{} -> {}".format(file_name,
-                                                single_process_handler.process,
-                                                total_process_handler.process,
-                                                file_name,
-                                                new_file_name))
+    log("INFO", "{} -> {}".format(file_name, new_file_name), file_name, sp, tp)
 
 
 def binary_image(image: Image, threshold: int = 128):
