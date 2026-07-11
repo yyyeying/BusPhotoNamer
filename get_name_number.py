@@ -66,66 +66,69 @@ def get_name_number(file_path: str, image: Image, process_handler: ProcessHandle
                                                          total_process_handler.process, log_id))
     with boat_lock:
         boat = Boat()
-        result = boat.paddle.ocr(img_array)
+        # PaddleOCR 3.x 使用 predict()，返回 generator，转为 list 确保在锁内完成推理
+        result = list(boat.paddle.predict(img_array))
     with print_lock:
         print("[{} {:.2f}% {:.2f}%]Finish OCR: {}".format(file_path,
                                                           process_handler.process,
                                                           total_process_handler.process, log_id))
-    result = result[0]
-    for r in result:
-        box = r[0]
-        score = r[1][1]
-        text = r[1][0]
-        box_center = [int(sum([b[0] for b in box]) / 4 / image.width * 100),
-                      int(sum([b[1] for b in box]) / 4 / image.height * 100)]
-        with print_lock:
-            print("[{} {:.2f}% {:.2f}%]{} text: {}, score: {:.4f}, box: {}".format(file_path,
-                                                                                   process_handler.process,
-                                                                                   total_process_handler.process,
-                                                                                   log_id,
-                                                                                   text,
-                                                                                   score, box_center))
-        if score < 0.75:
-            continue
-        if box_center[0] < 15 or box_center[0] > 85 or box_center[1] < 15 or box_center[1] > 85:
-            continue
-
-        id_temp = re.findall(id_regex, text)
-        if len(id_temp) > 0:
+    for res in result:
+        json_data = res.json
+        rec_texts = json_data["rec_texts"]
+        rec_scores = json_data["rec_scores"]
+        rec_polys = json_data["rec_polys"]
+        for text, score, polys in zip(rec_texts, rec_scores, rec_polys):
+            # 计算文本框中心位置（百分比）
+            num_points = len(polys)
+            box_center = [int(sum(p[0] for p in polys) / num_points / image.width * 100),
+                          int(sum(p[1] for p in polys) / num_points / image.height * 100)]
             with print_lock:
-                print("[{} {:.2f}% {:.2f}%]疑似车牌号: {}".format(
-                    file_path,
-                    process_handler.process,
-                    total_process_handler.process,
-                    id_temp))
-            id_list.append((id_temp[0], score))
-        else:
-            number_temp = re.findall(number_regex, text)
-            if len(number_temp) == 1 and len(number_temp[0]) > 0:
+                print("[{} {:.2f}% {:.2f}%]{} text: {}, score: {:.4f}, box: {}".format(file_path,
+                                                                                       process_handler.process,
+                                                                                       total_process_handler.process,
+                                                                                       log_id,
+                                                                                       text,
+                                                                                       score, box_center))
+            # PaddleOCR 3.x 已内置 text_rec_score_thresh=0.75 过滤，此处仅做位置过滤
+            if box_center[0] < 15 or box_center[0] > 85 or box_center[1] < 15 or box_center[1] > 85:
+                continue
+
+            id_temp = re.findall(id_regex, text)
+            if len(id_temp) > 0:
                 with print_lock:
-                    print("[{} {:.2f}% {:.2f}%]疑似自编号： {}".format(
+                    print("[{} {:.2f}% {:.2f}%]疑似车牌号: {}".format(
                         file_path,
                         process_handler.process,
-                        total_process_handler.process, number_temp))
-                number_list.append((number_temp[0], score))
+                        total_process_handler.process,
+                        id_temp))
+                id_list.append((id_temp[0], score))
             else:
-                bpt_line_temp = re.findall(bpt_line_regex, text)
-                non_bpt_line_temp = re.findall(non_bpt_line_regex, text)
-                if len(non_bpt_line_temp) == 1 and non_bpt_line_temp[0] != "0":
+                number_temp = re.findall(number_regex, text)
+                if len(number_temp) == 1 and len(number_temp[0]) > 0:
                     with print_lock:
-                        print("[{} {:.2f}% {:.2f}%]疑似非公交集团线路号：{}".format(
+                        print("[{} {:.2f}% {:.2f}%]疑似自编号： {}".format(
                             file_path,
                             process_handler.process,
-                            total_process_handler.process,
-                            non_bpt_line_temp))
-                    line_list.append((non_bpt_line_temp[0], score))
-                if len(bpt_line_temp) == 1 and bpt_line_temp[0] != "0":
-                    with print_lock:
-                        print("[{} {:.2f}% {:.2f}%]疑似线路号：{}".format(
-                            file_path,
-                            process_handler.process,
-                            total_process_handler.process,
-                            bpt_line_temp))
-                    line_list.append((bpt_line_temp[0], score))
+                            total_process_handler.process, number_temp))
+                    number_list.append((number_temp[0], score))
+                else:
+                    bpt_line_temp = re.findall(bpt_line_regex, text)
+                    non_bpt_line_temp = re.findall(non_bpt_line_regex, text)
+                    if len(non_bpt_line_temp) == 1 and non_bpt_line_temp[0] != "0":
+                        with print_lock:
+                            print("[{} {:.2f}% {:.2f}%]疑似非公交集团线路号：{}".format(
+                                file_path,
+                                process_handler.process,
+                                total_process_handler.process,
+                                non_bpt_line_temp))
+                        line_list.append((non_bpt_line_temp[0], score))
+                    if len(bpt_line_temp) == 1 and bpt_line_temp[0] != "0":
+                        with print_lock:
+                            print("[{} {:.2f}% {:.2f}%]疑似线路号：{}".format(
+                                file_path,
+                                process_handler.process,
+                                total_process_handler.process,
+                                bpt_line_temp))
+                        line_list.append((bpt_line_temp[0], score))
 
     return line_list, number_list, id_list
