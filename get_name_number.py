@@ -12,6 +12,9 @@ from regex import bpt_line_regex, non_bpt_line_regex, number_regex, id_regex
 
 boat_lock = threading.Lock()
 
+# 运通线路号完整模式（用于跨文本区域合并）
+yuntong_regex = re.compile(r'运通1[012][0-9]|运通20[0-9]')
+
 
 class GetNameNumber(Thread):
     def __init__(self, file_path: str, image: Image, process_handler: ProcessHandler):
@@ -50,6 +53,8 @@ def get_name_number(file_path: str, image: Image, process_handler: ProcessHandle
     number_list = []
     line_list = []
     id_list = []
+    all_texts = []
+    all_scores = []
     # PaddleOCR 3.x 要求 RGB 图像，灰度/二值图需转换
     if image.mode != "RGB":
         image = image.convert("RGB")
@@ -75,6 +80,10 @@ def get_name_number(file_path: str, image: Image, process_handler: ProcessHandle
             if box_center[0] < 15 or box_center[0] > 85 or box_center[1] < 15 or box_center[1] > 85:
                 continue
 
+            # 收集所有通过过滤的文本片段（用于后续运通合并）
+            all_texts.append(text)
+            all_scores.append(score)
+
             id_temp = re.findall(id_regex, text)
             if len(id_temp) > 0:
                 log("INFO", "疑似车牌号: {}".format(id_temp), file_path, sp, tp)
@@ -93,5 +102,17 @@ def get_name_number(file_path: str, image: Image, process_handler: ProcessHandle
                     if len(bpt_line_temp) == 1 and bpt_line_temp[0] != "0":
                         log("INFO", "疑似线路号: {}".format(bpt_line_temp), file_path, sp, tp)
                         line_list.append((bpt_line_temp[0], score))
+
+    # 运通线路号合并：OCR 可能将"运通"和数字拆分为不同文本区域
+    # 甚至"运"和"通"也分开，拼接所有文本后重新搜索
+    if all_texts:
+        joined_text = ''.join(all_texts)
+        existing_lines = [l[0] for l in line_list]
+        avg_score = sum(all_scores) / len(all_scores) if all_scores else 0.9
+        yuntong_matches = re.findall(yuntong_regex, joined_text)
+        for match in yuntong_matches:
+            if match not in existing_lines:
+                log("INFO", "合并运通线路号: {}".format(match), file_path, sp, tp)
+                line_list.append((match, avg_score))
 
     return line_list, number_list, id_list
