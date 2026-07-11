@@ -73,7 +73,7 @@ def get_name_number(file_path: str, image: Image, process_handler: ProcessHandle
                                                           process_handler.process,
                                                           total_process_handler.process, log_id))
     for res in result:
-        json_data = res.json
+        json_data = res.json['res']
         rec_texts = json_data["rec_texts"]
         rec_scores = json_data["rec_scores"]
         rec_polys = json_data["rec_polys"]

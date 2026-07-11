@@ -64,13 +64,15 @@ def ocr_namer(file_path: str, file_name: str):
     Phase 3: 9 张 Otsu 自适应二值化（仅在 Phase 2 不足时）
     每阶段内的图像变体通过多线程并行处理。
     """
-    # 跳过已识别格式的图片（文件名以"{线路号}路"开头）
+    # 跳过已识别格式的图片（文件名以"{线路号}路"开头且无 unknown 字段）
     line_prefix_match = re.match(r'^(.+?)路', file_name)
     if line_prefix_match:
         prefix = line_prefix_match.group(1)
         if re.fullmatch(bpt_line_regex, prefix) or re.fullmatch(non_bpt_line_regex, prefix):
-            print("[{}]跳过已识别格式的图片".format(file_name))
-            return
+            if "unknown" not in file_name:
+                print("[{}]跳过已识别格式的图片".format(file_name))
+                return
+            print("[{}]检测到 unknown 字段，重新识别".format(file_name))
     single_process_handler = ProcessHandler(MAX_STEPS)
     print("[{} {:.2f}% {:.2f}%]processing {}".format(file_name,
                                                      single_process_handler.process,
