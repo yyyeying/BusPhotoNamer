@@ -207,6 +207,11 @@ def ocr_namer(file_path: str, file_name: str):
     else:
         id_ = "unknown"
         flag = True
+    # 运通线路才允许 4 位自编号
+    if number != "unknown" and len(number) == 4 and not line.startswith("运通"):
+        log("INFO", "非运通线路不允许 4 位自编号，丢弃: {}".format(number), file_name, sp, tp)
+        number = "unknown"
+        flag = True
     # 所有字段均为 unknown 时跳过重命名
     if line == "unknown" and number == "unknown" and id_ == "unknown":
         log("WARN", "所有字段均为 unknown，跳过重命名", file_name, sp, tp)
