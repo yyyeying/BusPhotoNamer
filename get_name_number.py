@@ -73,11 +73,8 @@ def get_name_number(file_path: str, image: Image, process_handler: ProcessHandle
                           int(sum(p[1] for p in polys) / num_points / image.height * 100)]
             log("INFO", "text={}, score={:.4f}, box={}".format(text, score, box_center),
                 file_path, sp, tp)
-            # PaddleOCR 3.x 已内置 text_rec_score_thresh=0.75 过滤，此处仅做位置过滤
-            if box_center[0] < 15 or box_center[0] > 85 or box_center[1] < 15 or box_center[1] > 85:
-                continue
 
-            # 收集所有通过过滤的文本片段（用于后续汉字线路号合并）
+            # 收集所有文本片段（用于后续汉字线路号合并）
             all_texts.append(text)
             all_scores.append(score)
 
