@@ -12,9 +12,6 @@ from regex import bpt_line_regex, non_bpt_line_regex, number_regex, id_regex
 
 boat_lock = threading.Lock()
 
-# 运通线路号完整模式（用于跨文本区域合并）
-yuntong_regex = re.compile(r'运通1[012][0-9]|运通20[0-9]')
-
 
 class GetNameNumber(Thread):
     def __init__(self, file_path: str, image: Image, process_handler: ProcessHandler):
@@ -80,7 +77,7 @@ def get_name_number(file_path: str, image: Image, process_handler: ProcessHandle
             if box_center[0] < 15 or box_center[0] > 85 or box_center[1] < 15 or box_center[1] > 85:
                 continue
 
-            # 收集所有通过过滤的文本片段（用于后续运通合并）
+            # 收集所有通过过滤的文本片段（用于后续汉字线路号合并）
             all_texts.append(text)
             all_scores.append(score)
 
@@ -103,16 +100,18 @@ def get_name_number(file_path: str, image: Image, process_handler: ProcessHandle
                         log("INFO", "疑似线路号: {}".format(bpt_line_temp), file_path, sp, tp)
                         line_list.append((bpt_line_temp[0], score))
 
-    # 运通线路号合并：OCR 可能将"运通"和数字拆分为不同文本区域
-    # 甚至"运"和"通"也分开，拼接所有文本后重新搜索
+    # 汉字前缀线路号合并：OCR 可能将汉字和数字拆分为不同文本区域
+    # 拼接所有文本后重新搜索，补充未被单区域匹配到的汉字线路号
     if all_texts:
         joined_text = ''.join(all_texts)
-        existing_lines = [l[0] for l in line_list]
+        existing_lines = set(l[0] for l in line_list)
         avg_score = sum(all_scores) / len(all_scores) if all_scores else 0.9
-        yuntong_matches = re.findall(yuntong_regex, joined_text)
-        for match in yuntong_matches:
-            if match not in existing_lines:
-                log("INFO", "合并运通线路号: {}".format(match), file_path, sp, tp)
-                line_list.append((match, avg_score))
+        for regex in [bpt_line_regex, non_bpt_line_regex]:
+            for match in re.findall(regex, joined_text):
+                # 仅添加含汉字且未被单区域匹配到的结果
+                if match not in existing_lines and re.search(r'[\u4e00-\u9fa5]', match):
+                    log("INFO", "合并线路号: {}".format(match), file_path, sp, tp)
+                    line_list.append((match, avg_score))
+                    existing_lines.add(match)
 
     return line_list, number_list, id_list
