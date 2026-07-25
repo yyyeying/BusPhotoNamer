@@ -8,6 +8,7 @@ __pycache__/
 
 # 临时文件
 cache/
+logs/
 
 # IDE
 .idea/
@@ -17,3 +18,5 @@ cache/
 Thumbs.db
 Desktop.ini
 .DS_Store
+
+venv/

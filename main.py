@@ -1,16 +1,20 @@
 import argparse
+import datetime
 import logging
 import os
 import sys
 
 from ocr_namer import MAX_STEPS, ocr_namer
-from process import log, total_process_handler
+from process import close_log_file, log, setup_log_file, total_process_handler
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 logging.disable(logging.DEBUG)
 
 # 支持的图片扩展名
 IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp', '.webp'}
+
+# 日志输出目录（相对于工作目录）
+LOG_DIR = "logs"
 
 
 def collect_images(root_path: str) -> list:
@@ -25,36 +29,48 @@ def collect_images(root_path: str) -> list:
 
 def main():
     """主入口：递归遍历指定目录及其子目录下的公交车照片，逐张执行 OCR 识别并重命名。"""
-    parser = argparse.ArgumentParser(description="公交车照片 OCR 自动重命名工具")
-    parser.add_argument("image_path", nargs="?", default=None,
-                        help="照片目录路径（支持递归子目录），不指定则使用 config_local.py 中的默认路径")
-    parser.add_argument("--verify", action="store_true",
-                        help="重新 OCR 验证已命名文件，不一致时替换（默认跳过已命名文件）")
-    args = parser.parse_args()
+    # 每次运行创建独立的带时间戳的日志文件
+    os.makedirs(LOG_DIR, exist_ok=True)
+    log_file_path = os.path.join(
+        LOG_DIR,
+        "busphoto_{}.log".format(datetime.datetime.now().strftime("%Y%m%d_%H%M%S")))
+    setup_log_file(log_file_path)
 
-    # 未指定路径时使用 config_local.py 中的默认路径
-    if args.image_path is not None:
-        image_path = args.image_path
-    else:
-        try:
-            from config_local import DEFAULT_IMAGE_PATH
-            image_path = DEFAULT_IMAGE_PATH
-        except ImportError:
-            log("ERROR", "未指定目录路径，且 config_local.py 不存在")
-            log("INFO", "请通过命令行参数指定路径，或创建 config_local.py 设置 DEFAULT_IMAGE_PATH")
+    try:
+        parser = argparse.ArgumentParser(description="公交车照片 OCR 自动重命名工具")
+        parser.add_argument("image_path", nargs="?", default=None,
+                            help="照片目录路径（支持递归子目录），不指定则使用 config_local.py 中的默认路径")
+        parser.add_argument("--verify", action="store_true",
+                            help="重新 OCR 验证已命名文件，不一致时替换（默认跳过已命名文件）")
+        args = parser.parse_args()
+
+        log("INFO", "日志文件: {}".format(log_file_path))
+
+        # 未指定路径时使用 config_local.py 中的默认路径
+        if args.image_path is not None:
+            image_path = args.image_path
+        else:
+            try:
+                from config_local import DEFAULT_IMAGE_PATH
+                image_path = DEFAULT_IMAGE_PATH
+            except ImportError:
+                log("ERROR", "未指定目录路径，且 config_local.py 不存在")
+                log("INFO", "请通过命令行参数指定路径，或创建 config_local.py 设置 DEFAULT_IMAGE_PATH")
+                sys.exit(1)
+        if not os.path.isdir(image_path):
+            log("ERROR", "目录不存在: {}".format(image_path))
             sys.exit(1)
-    if not os.path.isdir(image_path):
-        log("ERROR", "目录不存在: {}".format(image_path))
-        sys.exit(1)
 
-    images = collect_images(image_path)
-    log("INFO", "共找到 {} 张图片 | 目录: {}".format(len(images), image_path))
-    total_process_handler.steps = len(images) * MAX_STEPS
-    for dir_path, file_name in images:
-        try:
-            ocr_namer(dir_path, file_name, skip_named=not args.verify)
-        except Exception as e:
-            log("ERROR", "处理出错，跳过: {}".format(e), file_name)
+        images = collect_images(image_path)
+        log("INFO", "共找到 {} 张图片 | 目录: {}".format(len(images), image_path))
+        total_process_handler.steps = len(images) * MAX_STEPS
+        for dir_path, file_name in images:
+            try:
+                ocr_namer(dir_path, file_name, skip_named=not args.verify)
+            except Exception as e:
+                log("ERROR", "处理出错，跳过: {}".format(e), file_name)
+    finally:
+        close_log_file()
 
 
 if __name__ == "__main__":
