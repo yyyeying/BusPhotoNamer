@@ -1,8 +1,10 @@
 import datetime
+import math
 import os
 import os.path
 import re
 from collections import Counter, defaultdict
+
 
 import numpy as np
 from PIL import Image, ImageFilter
@@ -17,6 +19,17 @@ MAX_STEPS = 21
 # 车牌后缀先验加权系数：自编号第二位与新能源牌尾字母相关时，
 # 对相应后缀车牌软性提权（仅提升权重，不保证胜出）
 PLATE_SUFFIX_BOOST = 2.0
+
+# 1 位纯数字线路号惩罚系数：北京确实有 5 路、7 路等单数字线路，但车身零碎数字、
+# 车型标识被误读成 1 位数的概率远高于真实 LED 屏，故软降权而非直接丢弃。
+SINGLE_DIGIT_LINE_PENALTY = 0.4
+# 线路号按位置去重的容差（占图宽/高百分比）：中心点相距在此范围内视为同一处文本
+LINE_POSITION_TOLERANCE = 3.0
+# 同一位置被 N 个图像变体重复识别的加成系数：权重 = 最高分 × (1 + 系数 × ln(N))。
+# 取对数而非线性累加：多变体一致仍算可靠性信号，但不能让同一份证据被数 N 遍。
+REPEAT_BONUS = 0.5
+
+
 
 
 def otsu_threshold(image_array: np.ndarray) -> int:
@@ -108,6 +121,57 @@ def _get_exif_datetime(image: Image):
 def _box_overlap(box1: tuple, box2: tuple) -> bool:
     """判断两个边界框是否有交集。box = (x_min, y_min, x_max, y_max)"""
     return box1[0] < box2[2] and box2[0] < box1[2] and box1[1] < box2[3] and box2[1] < box1[3]
+
+
+def _box_center(box: tuple) -> tuple:
+    """返回边界框中心点 (cx, cy)。"""
+    return (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
+
+
+def format_vote(weighted: dict, counts: Counter) -> str:
+    """把加权投票结果格式化为"值=权重(次数)"的降序字符串，便于排查误判来源。"""
+    items = sorted(weighted.items(), key=lambda kv: kv[1], reverse=True)
+    return " ".join("{}={:.2f}({}次)".format(text, weight, counts[text]) for text, weight in items)
+
+
+def aggregate_line_by_position(line_list: list, tolerance: float = LINE_POSITION_TOLERANCE) -> list:
+    """把同一线路号在同一位置的多次识别聚合成一条候选，重复次数按对数加成。
+
+    21 个图像变体会把同一处文本反复识别，直接累加置信度等于把同一份证据数了 N 遍：
+    车身碎片数字只要在多个通道图里稳定出现，就能压过只在少数变体里读出的真实 LED
+    线路号（实测车头碎片"5"累计 3.60 分，压过只被读到 2 次的真实线路号）。
+    但"多个变体读出同一结果"本身也是可靠性信号，所以不做简单去重，而是取该位置的
+    最高分再按重复次数做次线性加成。不同位置的候选（如背景站牌）仍各自计票。
+    仅对线路号生效：自编号/车牌的重复计票目前未观察到误判，保守不动。
+    box 为 None 的汉字合并候选没有位置信息，原样保留。
+    """
+    # 每个分组为 [取值, 位置框, 该位置的所有置信度]
+    groups = []
+    for text, score, box in sorted(line_list, key=lambda item: item[1], reverse=True):
+        if box is None:
+            groups.append([text, box, [score]])
+            continue
+        cx, cy = _box_center(box)
+        for group in groups:
+            if group[0] != text or group[1] is None:
+                continue
+            group_cx, group_cy = _box_center(group[1])
+            if abs(cx - group_cx) <= tolerance and abs(cy - group_cy) <= tolerance:
+                group[2].append(score)
+                break
+        else:
+            groups.append([text, box, [score]])
+    return [(text, max(scores) * (1 + REPEAT_BONUS * math.log(len(scores))), box)
+            for text, box, scores in groups]
+
+
+
+def line_weight(text: str, score: float) -> float:
+    """计算线路号候选的投票权重，对 1 位纯数字候选降权。"""
+    if len(text) == 1 and text.isdigit():
+        return score * SINGLE_DIGIT_LINE_PENALTY
+    return score
+
 
 
 def ocr_namer(file_path: str, file_name: str, skip_named: bool = False):
@@ -282,24 +346,39 @@ def ocr_namer(file_path: str, file_name: str, skip_named: bool = False):
     log("INFO", "清理后: 线路号={}, 自编号={}, 车牌号={}".format(
         [x[0] for x in line_list], [x[0] for x in number_list], [x[0] for x in id_list]),
         file_name, sp, tp)
+    # 按位置聚合：同一位置被多个图像变体重复识别的线路号合并为一票（重复次数对数加成）
+    before_aggregate = len(line_list)
+    line_list = aggregate_line_by_position(line_list)
+    if len(line_list) < before_aggregate:
+        log("INFO", "线路号按位置聚合: {} -> {} 个，剩余={}".format(
+            before_aggregate, len(line_list), [x[0] for x in line_list]), file_name, sp, tp)
+
+
     # 置信度加权投票：累计每个候选值的置信度，取最高者
     flag = False
     if len(line_list) > 0:
         weighted = defaultdict(float)
+        counts = Counter()
         for text, score, _ in line_list:
-            weighted[text] += score
+            weighted[text] += line_weight(text, score)
+            counts[text] += 1
         line = max(weighted, key=weighted.get)
+        log("INFO", "线路号投票: {}".format(format_vote(weighted, counts)), file_name, sp, tp)
     else:
         line = "unknown"
         flag = True
     if len(number_list) > 0:
         weighted = defaultdict(float)
+        counts = Counter()
         for text, score, _ in number_list:
             weighted[text] += score
+            counts[text] += 1
         number = max(weighted, key=weighted.get)
+        log("INFO", "自编号投票: {}".format(format_vote(weighted, counts)), file_name, sp, tp)
     else:
         number = "unknown"
         flag = True
+
     if len(id_list) > 0:
         # 车牌后缀先验：自编号第二位为 6 时大客车新能源牌多为「京A·5位数字D」，
         # 为 8 时多为「京A·5位数字F」。匹配到多个车牌时，对相应后缀车牌软性提权。
@@ -325,15 +404,22 @@ def ocr_namer(file_path: str, file_name: str, skip_named: bool = False):
         jing_a_list = [item for item in id_list if item[0].startswith("京A")]
         if jing_a_list:
             weighted = defaultdict(float)
+            counts = Counter()
             for text, score, _ in jing_a_list:
                 weighted[text] += plate_weight(text, score)
+                counts[text] += 1
             id_ = max(weighted, key=weighted.get).replace("皖", "京")
-            log("INFO", "优先选择京A车牌: {}".format(id_), file_name, sp, tp)
+            log("INFO", "优先选择京A车牌: {} | 投票: {}".format(
+                id_, format_vote(weighted, counts)), file_name, sp, tp)
         else:
             weighted = defaultdict(float)
+            counts = Counter()
             for text, score, _ in id_list:
                 weighted[text] += plate_weight(text, score)
+                counts[text] += 1
             id_ = max(weighted, key=weighted.get).replace("皖", "京")
+            log("INFO", "车牌号投票: {}".format(format_vote(weighted, counts)), file_name, sp, tp)
+
     else:
         id_ = "unknown"
         flag = True

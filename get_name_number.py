@@ -14,26 +14,37 @@ boat_lock = threading.Lock()
 
 # 方案 J 阈值：线路号框水平中心与主车锚点（车牌/自编号均值）的距离（占图宽百分比）
 # 超过此值判定为背景/离群，软降权。取较大值以保守，只打击明显偏离画面边缘的候选。
+# 不要再收紧：斜侧拍摄时车头 LED 与车牌的水平中心可差 21%（实测 69 路），与背景
+# 路牌的偏移量重叠，收紧会误伤真实线路号。背景干扰改由位置聚合+投票权重压制。
 LINE_X_FAR_THRESHOLD = 30
 # 方案 J 惩罚系数：远离主车的线路号候选（背景站牌/指路牌/其他车辆）乘以此系数。
 # 取较小值以压制站牌等高频出现的背景线路号（如站牌"671"被读十余次）。
 LINE_X_FAR_PENALTY = 0.3
+# 线路号与自编号的最小垂直间距（占图高百分比）。线路号 LED 屏应明显高于车头自编号，
+# 间距不足（含处于同一行）说明该数字是自编号旁的车身碎片，需降权。
+MIN_LINE_NUMBER_GAP = 4
+# 首位形近字母还原后，原截断候选的惩罚系数（见 _fix_digit_misread）
+TRUNCATED_LINE_PENALTY = 0.6
+# LED 点阵屏数字笔画残缺时被误读为形近字母的映射
+DIGIT_MISREAD_MAP = {"I": "1", "L": "1", "T": "7", "Z": "2", "S": "5", "B": "8",
+                     "G": "6", "A": "4", "J": "3", "O": "0", "D": "0", "Q": "0", "U": "0"}
 
 
-def _box_area(box: tuple) -> int:
-    """计算边界框面积。box = (x_min, y_min, x_max, y_max)"""
-    return max(0, box[2] - box[0]) * max(0, box[3] - box[1])
+def _box_area(box: tuple) -> float:
+    """计算边界框面积。box = (x_min, y_min, x_max, y_max)，单位为占图宽/高的百分比"""
+    return max(0.0, box[2] - box[0]) * max(0.0, box[3] - box[1])
 
 
-def _box_overlap(box1: tuple, box2: tuple) -> int:
+def _box_overlap(box1: tuple, box2: tuple) -> float:
     """计算两个边界框的交集面积。"""
     x_min = max(box1[0], box2[0])
     y_min = max(box1[1], box2[1])
     x_max = min(box1[2], box2[2])
     y_max = min(box1[3], box2[3])
     if x_max <= x_min or y_max <= y_min:
-        return 0
+        return 0.0
     return (x_max - x_min) * (y_max - y_min)
+
 
 
 def _normalize_plate(plate: str) -> str:
@@ -57,6 +68,28 @@ def _fix_kuai_misread(text: str) -> str:
     text = re.sub(r'(?<=\d)[kK](?=[内外])', '快', text)
     text = re.sub(r'(?<=\d[内外])[kK]', '快', text)
     return text
+
+
+def _fix_digit_misread(text: str):
+    """把"形近字母+2位数字"的线路号文本还原为 3 位线路号，无法还原时返回 None。
+
+    LED 点阵屏笔画残缺时首位数字常被读成字母（实测"331"被读成"J31"），正则会在
+    字母处截断只得到"31"，丢掉一位。
+    仅限还原后恰为 3 位的情况："A447""H403"这类数字部分已有 3 位的文本，其字母是
+    屏边框/立柱噪声而不是数字，不能还原。
+    """
+    m = re.fullmatch(r'([A-Z])([0-9]{2})', text)
+    if m is None:
+        return None
+    digit = DIGIT_MISREAD_MAP.get(m.group(1))
+    if digit is None:
+        return None
+    fixed = digit + m.group(2)
+    # 还原结果必须本身是合法线路号（首位为 0 的"031"不是）
+    if re.fullmatch(bpt_line_regex, fixed) is None:
+        return None
+    return fixed
+
 
 
 class GetNameNumber(Thread):
@@ -117,6 +150,14 @@ def get_name_number(file_path: str, image: Image, process_handler: ProcessHandle
     all_scores = []
     # 原始检测框（text, score, box, box_center），用于后续拆分车牌拼接
     raw_dets = []
+
+    def add_line(text: str, score: float, box: tuple, box_center: list, area: float):
+        """登记一个线路号候选，同步维护位置/边界框数组以保证索引对齐。"""
+        line_list.append((text, score, box))
+        line_ys.append(box_center[1])
+        line_xs.append(box_center[0])
+        line_boxes.append((box, area))
+
     # PaddleOCR 3.x 要求 RGB 图像，灰度/二值图需转换
     if image.mode != "RGB":
         image = image.convert("RGB")
@@ -138,10 +179,14 @@ def get_name_number(file_path: str, image: Image, process_handler: ProcessHandle
             y_coords = [p[1] for p in polys]
             box_center = [int(sum(x_coords) / num_points / image.width * 100),
                           int(sum(y_coords) / num_points / image.height * 100)]
-            box = (min(x_coords), min(y_coords), max(x_coords), max(y_coords))
+            # box 用百分比而非像素：各图像变体尺寸不同（含 resize 到 1280x720 的变体），
+            # 像素坐标跨变体无法比较，归一化后才能做跨变体的位置去重与重叠判断
+            box = (min(x_coords) / image.width * 100, min(y_coords) / image.height * 100,
+                   max(x_coords) / image.width * 100, max(y_coords) / image.height * 100)
             area = _box_area(box)
-            log("INFO", "text={}, score={:.4f}, box={}, area={}".format(text, score, box_center, area),
+            log("INFO", "text={}, score={:.4f}, box={}, area={:.2f}".format(text, score, box_center, area),
                 file_path, sp, tp)
+
 
             # 收集所有文本片段（用于后续汉字线路号合并）
             all_texts.append(text)
@@ -176,10 +221,7 @@ def get_name_number(file_path: str, image: Image, process_handler: ProcessHandle
                         bpt_matches = list(re.finditer(bpt_line_regex, line_text))
                         if len(non_bpt_line_temp) == 1 and non_bpt_line_temp[0] != "0":
                             log("INFO", "疑似非公交集团线路号: {}".format(non_bpt_line_temp), file_path, sp, tp)
-                            line_list.append((non_bpt_line_temp[0], score, box))
-                            line_ys.append(box_center[1])
-                            line_xs.append(box_center[0])
-                            line_boxes.append((box, area))
+                            add_line(non_bpt_line_temp[0], score, box, box_center, area)
                         if len(bpt_matches) == 1 and bpt_matches[0].group() != "0":
                             m = bpt_matches[0]
                             # F：数字前缀守卫——线路号数字前紧邻其他数字，
@@ -188,11 +230,20 @@ def get_name_number(file_path: str, image: Image, process_handler: ProcessHandle
                                 log("INFO", "疑似数字内嵌片段，不作为线路号: {}".format(line_text),
                                     file_path, sp, tp)
                             else:
-                                log("INFO", "疑似线路号: {}".format([m.group()]), file_path, sp, tp)
-                                line_list.append((m.group(), score, box))
-                                line_ys.append(box_center[1])
-                                line_xs.append(box_center[0])
-                                line_boxes.append((box, area))
+                                # P1：首位形近字母还原（"J31"->"331"）。原截断候选降权保留，
+                                # 万一字母确实是噪声（真实线路为 2 位），仍可靠其他变体读出的
+                                # 纯数字结果累计票数翻盘。
+                                fixed = _fix_digit_misread(line_text)
+                                if fixed is not None:
+                                    log("INFO", "疑似首位误读: {} -> {}，原候选 {} 降权".format(
+                                        line_text, fixed, m.group()), file_path, sp, tp)
+                                    add_line(fixed, score, box, box_center, area)
+                                    add_line(m.group(), score * TRUNCATED_LINE_PENALTY,
+                                             box, box_center, area)
+                                else:
+                                    log("INFO", "疑似线路号: {}".format([m.group()]), file_path, sp, tp)
+                                    add_line(m.group(), score, box, box_center, area)
+
 
     # 拆分车牌拼接：OCR 有时把车牌拆成"京A"前缀框 + "48040F"号码框两个（同一行、
     # 水平相邻）。单独的前缀太短、号码段会被当成自编号，导致主车真车牌丢失。
@@ -218,17 +269,20 @@ def get_name_number(file_path: str, image: Image, process_handler: ProcessHandle
     # 逐候选判断（而非用整类平均值），避免底部离群项被顶部候选"平均"掩盖：
     # 例如车型型号"C10E"里的"10"位于车身底部，应单独降权，
     # 而顶部 LED 线路号"606"不受影响。违反位置关系的候选置信度乘以 0.5。
+    # 线路号还要求与自编号有 MIN_LINE_NUMBER_GAP 的垂直间距：只判"严格在下方"会漏掉
+    # 与自编号同一行的车身碎片数字（实测自编号旁的"5"与自编号同在 y=59，逃过降权）。
     if line_ys and number_ys:
         avg_number_y = sum(number_ys) / len(number_ys)
         new_line_list = []
         for idx, (t, s, b) in enumerate(line_list):
-            if line_ys[idx] > avg_number_y:
-                log("INFO", "位置异常: 线路号 '{}'(y={:.0f})在自编号(y={:.0f})下方，降低置信度".format(
+            if line_ys[idx] > avg_number_y - MIN_LINE_NUMBER_GAP:
+                log("INFO", "位置异常: 线路号 '{}'(y={:.0f})未明显高于自编号(y={:.0f})，降低置信度".format(
                     t, line_ys[idx], avg_number_y), file_path, sp, tp)
                 new_line_list.append((t, s * 0.5, b))
             else:
                 new_line_list.append((t, s, b))
         line_list = new_line_list
+
     if number_ys and id_ys:
         avg_id_y = sum(id_ys) / len(id_ys)
         new_number_list = []
